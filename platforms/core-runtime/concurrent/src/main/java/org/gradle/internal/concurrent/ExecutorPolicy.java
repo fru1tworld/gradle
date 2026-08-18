@@ -83,6 +83,9 @@ public interface ExecutorPolicy {
 
         public void onFailure(String message, Throwable throwable) {
             // Capture or log all failures
+            if (message != null && message.contains("ExecHandleRunner")) {
+                LOGGER.error("HANGDEBUG swallowed first failure: " + message, throwable);
+            }
             if (!failure.compareAndSet(null, throwable)) {
                 LOGGER.error(message, throwable);
             }

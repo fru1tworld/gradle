@@ -155,15 +155,19 @@ public class ExecHandleRunner implements Runnable {
     @Override
     public void run() {
         // Split the `with` operation so that the `associatedBuildOperation` can be discarded when we wait in `process.waitFor()`
+        LOGGER.error("HANGDEBUG run() entered for {}", execHandle.getDisplayName());
         try {
             CurrentBuildOperationRef.instance().with(this.associatedBuildOperation, () -> {
                 startProcess();
+                LOGGER.error("HANGDEBUG startProcess() returned for {}", execHandle.getDisplayName());
 
                 execHandle.started();
+                LOGGER.error("HANGDEBUG started() returned for {}", execHandle.getDisplayName());
 
                 LOGGER.debug("waiting until streams are handled...");
                 streamsHandler.start();
             });
+            LOGGER.error("HANGDEBUG run() first phase complete for {}", execHandle.getDisplayName());
 
             if (execHandle.isDaemon()) {
                 CurrentBuildOperationRef.instance().with(this.associatedBuildOperation, () -> {
@@ -178,9 +182,11 @@ public class ExecHandleRunner implements Runnable {
                 });
             }
         } catch (Throwable t) {
+            LOGGER.error("HANGDEBUG run() caught throwable for " + execHandle.getDisplayName(), t);
             CurrentBuildOperationRef.instance().with(this.associatedBuildOperation, () -> {
                 execHandle.failed(t);
             });
+            LOGGER.error("HANGDEBUG run() failed() returned for {}", execHandle.getDisplayName());
         }
     }
 

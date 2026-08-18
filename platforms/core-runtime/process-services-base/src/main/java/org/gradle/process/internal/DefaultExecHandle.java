@@ -280,6 +280,7 @@ public class DefaultExecHandle implements ExecHandle, ProcessSettings {
                 this, new CompositeStreamsHandler(), processLauncher, executor, CurrentBuildOperationRef.instance().get()
             );
             executor.execute(execHandleRunner);
+            LOGGER.error("HANGDEBUG submitted ExecHandleRunner for {}", displayName);
 
             while (stateIn(ExecHandleState.STARTING)) {
                 LOGGER.debug("Waiting until process started: {}.", displayName);
