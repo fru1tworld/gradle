@@ -17,6 +17,7 @@ package org.gradle.api.plugins
 
 import org.gradle.integtests.fixtures.WellBehavedPluginTest
 import org.gradle.integtests.fixtures.executer.ExecutionResult
+import org.gradle.integtests.fixtures.timeout.IntegrationTestTimeout
 import org.gradle.internal.jvm.Jvm
 import org.gradle.internal.os.OperatingSystem
 import org.gradle.test.fixtures.file.TestFile
@@ -61,6 +62,8 @@ class ApplicationPluginIntegrationTest extends WellBehavedPluginTest {
         assertGeneratedWindowsStartScript()
     }
 
+    // TODO Remove this diagnostic timeout once the bucket29 / PR #38086 CI hang mechanism is identified and fixed
+    @IntegrationTestTimeout(300)
     @Requires(JdkVersionTestPreconditions.Jdk9OrLater)
     def "can generate start scripts with module path"() {
         given:
@@ -377,7 +380,87 @@ task execStartScript(type: Exec) {
                 $captureLines
             }
             """
-        return succeeds('execStartScript')
+        // TODO Remove this diagnostic watchdog (bucket29 / PR #38086 hang) once the mechanism is confirmed and fixed
+        Thread hangDiagnostics = startHangDiagnostics()
+        try {
+            return succeeds('execStartScript')
+        } finally {
+            hangDiagnostics.interrupt()
+        }
+    }
+
+    // TODO Remove this diagnostic (bucket29 / PR #38086 hang) once the mechanism is confirmed and fixed.
+    // A daemon watchdog that fires before the @IntegrationTestTimeout hard stop, on its own thread the
+    // Spock timeout interrupt does not touch (JavaProcessStackTracesMonitor runs on the interrupted test
+    // thread and came back empty). It uses ProcessHandle (not wmic, which emits UTF-16 and is removed in
+    // Windows 24H2) to capture the test-worker's descendants AND a system-wide cmd/conhost/java list, plus
+    // handle.exe pipe handles per shell, to find whatever holds the Exec's stdout/stderr pipe open even
+    // when the holder is not a descendant.
+    private static Thread startHangDiagnostics() {
+        Thread watchdog = new Thread({
+            try {
+                Thread.sleep(180_000)
+            } catch (InterruptedException ignored) {
+                return
+            }
+            dumpHangDiagnostics()
+        } as Runnable, "hang-diagnostics")
+        watchdog.setDaemon(true)
+        watchdog.start()
+        return watchdog
+    }
+
+    private static void dumpHangDiagnostics() {
+        def out = System.err
+        try {
+            ProcessHandle self = ProcessHandle.current()
+            out.println("===== HANG DIAGNOSTICS @ execStartScript (test-worker pid ${self.pid()}) =====")
+
+            List<ProcessHandle> all = ProcessHandle.allProcesses().collect(java.util.stream.Collectors.toList())
+            out.println("Total processes visible: ${all.size()}")
+
+            List<ProcessHandle> descendants = self.descendants().collect(java.util.stream.Collectors.toList())
+            out.println("Descendants of test-worker ${self.pid()}: ${descendants.size()}")
+            descendants.each { ph -> out.println("  DESC ${describeProcess(ph)}") }
+
+            List<ProcessHandle> shells = all.findAll { ph ->
+                String c = ph.info().command().orElse('').toLowerCase()
+                c.endsWith('cmd.exe') || c.endsWith('conhost.exe') || c.endsWith('java.exe')
+            }
+            out.println("System-wide cmd/conhost/java: ${shells.size()}")
+            shells.each { ph -> out.println("  PROC ${describeProcess(ph)}") }
+
+            List<Long> handlePids = [self.pid()]
+            all.findAll { ph ->
+                String c = ph.info().command().orElse('').toLowerCase()
+                c.endsWith('cmd.exe') || c.endsWith('conhost.exe')
+            }.each { handlePids << it.pid() }
+            handlePids.unique().each { pid ->
+                try {
+                    def hp = new ProcessBuilder('handle.exe', '-accepteula', '-a', '-nobanner', '-p', pid.toString())
+                        .redirectErrorStream(true).start()
+                    List<String> pipes = hp.inputStream.readLines().findAll { it.contains('Pipe') }
+                    hp.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                    out.println("--- handle.exe -p ${pid}: ${pipes.size()} pipe handle(s) ---")
+                    pipes.each { out.println("    ${it.trim()}") }
+                } catch (Throwable t) {
+                    out.println("handle.exe failed for pid ${pid}: ${t}")
+                }
+            }
+
+            out.println("===== END HANG DIAGNOSTICS =====")
+            out.flush()
+        } catch (Throwable t) {
+            t.printStackTrace()
+        }
+    }
+
+    private static String describeProcess(ProcessHandle ph) {
+        def info = ph.info()
+        long ppid = ph.parent().map({ it.pid() }).orElse(-1L)
+        String start = info.startInstant().map({ it.toString() }).orElse('?')
+        String cmd = info.commandLine().orElse(info.command().orElse('?'))
+        return "pid=${ph.pid()} ppid=${ppid} alive=${ph.isAlive()} start=${start} cmd=[${cmd}]"
     }
 
     private static String escapeForGroovy(String path) {
